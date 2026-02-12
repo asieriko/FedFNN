@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from models.losses import BalancedSoftmax
+from sklearn.metrics import f1_score
 import torch
 
 
@@ -94,6 +95,7 @@ class MyModelTrainer(ModelTrainer):
 
         metrics = {
             'test_correct': 0,
+            'test_f1': 0,
             'test_loss': 0,
             'test_total': 0
         }
@@ -113,10 +115,13 @@ class MyModelTrainer(ModelTrainer):
 
                 _, predicted = torch.max(pred, -1)
                 correct = predicted.eq(target).sum()
+                f1 = f1_score(predicted, target, average='micro')
 
                 metrics['test_correct'] += correct.item()
+                metrics['test_f1'] += f1
                 metrics['test_loss'] += loss.item() * target.size(0)
                 metrics['test_total'] += target.size(0)
+        metrics['test_f1'] /= metrics['test_total']
         return metrics
 
     def test_on_the_server(self, train_data_local_dict, test_data_local_dict, device, args=None) -> bool:

@@ -6,6 +6,10 @@ import wandb
 from data_process.dataset import FedDatasetCV
 from models.client import Client
 
+def f1score(confusion_matrix):
+    tn, fp, fn, tp = confusion_matrix
+    f1_score = 2 * tp / (2 * tp + fp + fn + 1e-10)
+    return f1_score
 
 class FedAvgAPI(object):
     def __init__(self, dataset: FedDatasetCV, model_trainer, p_args):
@@ -24,6 +28,9 @@ class FedAvgAPI(object):
         self.model_trainer = model_trainer
         self._setup_clients(self.train_data_local_num_dict, self.train_data_local_class_count, train_data_local_dict,
                             test_data_local_dict, model_trainer)
+
+        # Store local models for personalized evaluation
+        self.local_model_params = {}
 
     def _setup_clients(self, train_data_local_num_dict, train_data_local_class_count,
                        train_data_local_dict, test_data_local_dict, model_trainer):
@@ -62,6 +69,8 @@ class FedAvgAPI(object):
 
                 # train on new dataset
                 w = client.train(copy.deepcopy(w_global))
+                # Store local model for personalized evaluation
+                self.local_model_params[client_idx] = copy.deepcopy(w)
                 # self.logger.info("local weights = " + str(w))
                 w_locals.append((client.get_sample_number(), copy.deepcopy(w)))
 
@@ -69,7 +78,7 @@ class FedAvgAPI(object):
             w_global = self._aggregate(w_locals)
             self.model_trainer.set_model_params(w_global)
 
-            # test results
+            # test results - evaluate both global and personalized models
             metrics_rtn = self._local_test_on_all_clients(round_idx)
             # # at last round
             # if round_idx == self.args.comm_round - 1:
@@ -125,9 +134,11 @@ class FedAvgAPI(object):
             'train_num_samples': [],
             'train_num_correct': [],
             'train_losses': [],
+            'train_f1': [],
             'test_num_samples': [],
             'test_num_correct': [],
             'test_losses': [],
+            'test_f1': [],
         }
 
         train_rule_count_local = torch.zeros(self.args.n_client, self.args.n_rule).to(self.args.device)
@@ -139,6 +150,10 @@ class FedAvgAPI(object):
         test_acc_local = torch.zeros(self.args.n_client).to(self.args.device)
         train_loss_local = torch.zeros(self.args.n_client).to(self.args.device)
         test_loss_local = torch.zeros(self.args.n_client).to(self.args.device)
+
+        # Add personalized evaluation metrics
+        test_acc_local_personalized = torch.zeros(self.args.n_client).to(self.args.device)
+        test_loss_local_personalized = torch.zeros(self.args.n_client).to(self.args.device)
 
         train_rule_fs = torch.empty(0, self.args.n_rule).to(self.args.device)
         test_rule_fs = torch.empty(0, self.args.n_rule).to(self.args.device)
@@ -156,14 +171,18 @@ class FedAvgAPI(object):
                                         self.test_data_local_dict[client_idx],
                                         self.train_data_local_num_dict[client_idx],
                                             self.train_data_local_class_count[client_idx])
+
+            # ===== GLOBAL MODEL EVALUATION =====
             # train data
             train_local_metrics = client.local_test(False)
             train_num_client = copy.deepcopy(train_local_metrics['test_total'])
             train_correct_num_client = copy.deepcopy(train_local_metrics['test_correct'])
             train_loss_all_client = copy.deepcopy(train_local_metrics['test_loss'])
+            train_f1_client = copy.deepcopy(train_local_metrics['test_f1'])
             metrics['train_num_samples'].append(train_num_client)
             metrics['train_num_correct'].append(train_correct_num_client)
             metrics['train_losses'].append(train_loss_all_client)
+            metrics['train_f1'].append(train_f1_client)
             train_acc_client = train_correct_num_client / train_num_client
             train_loss_client = train_loss_all_client / train_num_client
             train_acc_local[client_idx] = train_acc_client
@@ -184,16 +203,18 @@ class FedAvgAPI(object):
             train_rule_count_local[client_idx, :] = train_rule_count_client
             train_rule_contr_local[client_idx, :] = train_rule_contr_client
 
-            # test data
+            # test data with global model
             test_local_metrics = client.local_test(True)
             test_num_client = copy.deepcopy(test_local_metrics['test_total'])
             test_correct_num_client = copy.deepcopy(test_local_metrics['test_correct'])
             test_loss_all_client = copy.deepcopy(test_local_metrics['test_loss'])
+            test_f1_client = copy.deepcopy(test_local_metrics['test_f1'])
             metrics['test_num_samples'].append(test_num_client)
             metrics['test_num_correct'].append(test_correct_num_client)
             metrics['test_losses'].append(test_loss_all_client)
+            metrics['test_f1'].append(test_f1_client)
 
-            # test on local test dataset
+            # test on local test dataset with global model
             test_acc_client = test_correct_num_client / test_num_client
             test_loss_client = test_loss_all_client / test_num_client
             test_acc_local[client_idx] = test_acc_client
@@ -213,6 +234,27 @@ class FedAvgAPI(object):
             test_rule_contr_client = test_rule_fs_client.mean(0)
             test_rule_count_local[client_idx, :] = test_rule_count_client
             test_rule_contr_local[client_idx, :] = test_rule_contr_client
+
+            # ===== PERSONALIZED MODEL EVALUATION =====
+            # Evaluate with the client's personalized local model
+            if client_idx in self.local_model_params:
+                # Save current global model
+                w_global_backup = copy.deepcopy(self.model_trainer.get_model_params())
+
+                # Load personalized model
+                self.model_trainer.set_model_params(self.local_model_params[client_idx])
+
+                # Test with personalized model
+                test_personalized_metrics = client.local_test(True)
+                test_correct_personalized = test_personalized_metrics['test_correct']
+                test_loss_personalized = test_personalized_metrics['test_loss']
+                test_num_personalized = test_personalized_metrics['test_total']
+
+                test_acc_local_personalized[client_idx] = test_correct_personalized / test_num_personalized
+                test_loss_local_personalized[client_idx] = test_loss_personalized / test_num_personalized
+
+                # Restore global model
+                self.model_trainer.set_model_params(w_global_backup)
 
         _, train_fs_max = torch.max(train_rule_fs, -1)
         # count the numbers of samples that treat certain rule as their best rule
@@ -258,17 +300,35 @@ class FedAvgAPI(object):
                     test_acc_local[client_idx])
                 metrics_rule[f"client{client_idx + 1}_test_loss"] = float(
                     test_loss_local[client_idx])
+                # Add personalized metrics
+                metrics_rule[f"client{client_idx + 1}_test_acc_personalized"] = float(
+                    test_acc_local_personalized[client_idx])
+                metrics_rule[f"client{client_idx + 1}_test_loss_personalized"] = float(
+                    test_loss_local_personalized[client_idx])
+                metrics_rule[f"client{client_idx + 1}_train_f1"] = float(
+                    metrics['train_f1'][client_idx])
+                metrics_rule[f"client{client_idx + 1}_test_f1"] = float(
+                    metrics['test_f1'][client_idx])
 
         # test on training dataset
         train_acc = sum(metrics['train_num_correct']) / sum(metrics['train_num_samples'])
         train_loss = sum(metrics['train_losses']) / sum(metrics['train_num_samples'])
+        if sum(metrics['train_num_samples']) > 0:
+            train_f1 = sum([f * n for f, n in zip(metrics['train_f1'], metrics['train_num_samples'])]) / sum(metrics['train_num_samples'])
+        else:
+            train_f1 = 0.0
 
         # test on test dataset
         test_acc = sum(metrics['test_num_correct']) / sum(metrics['test_num_samples'])
         test_loss = sum(metrics['test_losses']) / sum(metrics['test_num_samples'])
+        if sum(metrics['test_num_samples']) > 0:
+            test_f1 = sum([f * n for f, n in zip(metrics['test_f1'], metrics['test_num_samples'])]) / sum(metrics['test_num_samples'])
+        else:
+            test_f1 = 0.0
 
         metrics_stats = {'training_acc': train_acc, 'training_loss': train_loss,
-                         'test_acc': test_acc, 'test_loss': test_loss}
+                         'training_f1': train_f1, 'test_acc': test_acc, 'test_loss': test_loss,
+                         'test_f1': test_f1}
 
         metrics_rtn = {**metrics_stats, **metrics_rule}
         if not self.args.b_debug:
@@ -277,8 +337,10 @@ class FedAvgAPI(object):
         for client_idx in range(self.args.n_client):
             self.args.logger.info(f"client {client_idx} ==> training_acc: {train_acc_local[client_idx]}, "
                                   f"training_loss: {train_loss_local[client_idx]}, "
-                                  f"test_acc: {test_acc_local[client_idx]}, "
-                                  f"test_loss: {test_loss_local[client_idx]}")
+                                  f"test_acc (global): {test_acc_local[client_idx]}, "
+                                  f"test_loss (global): {test_loss_local[client_idx]}, "
+                                  f"test_acc (personalized): {test_acc_local_personalized[client_idx]}, "
+                                  f"test_loss (personalized): {test_loss_local_personalized[client_idx]}")
         return metrics_rtn
 
     def _local_test_on_validation_set(self, round_idx):

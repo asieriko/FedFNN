@@ -115,6 +115,9 @@ class FedKfoldPartition(object):
         self.local_train_cls_counts_list = []
 
     def partition(self, gnd, is_shuffle=True, random_state=None):
+        if self.local_train_indexes or self.local_test_indexes:
+            # Already initialized from external partitions; do not overwrite.
+            return
         n_smpl = gnd.shape[0]
         total_index_origin = np.arange(n_smpl)
         total_index_shuffled = np.arange(n_smpl)
@@ -189,7 +192,7 @@ class FedKfoldPartition(object):
                 global_test_kfold_j = np.concatenate((global_test_kfold_j,
                                                           self.local_test_indexes[client_j][kfold_j]), axis=0)
             self.global_train_indexes.append(global_train_kfold_j)
-            self.global_test_indexes.append(global_test_kfold_j)
+            self.global_test_indexes.append(global_test_kfold_j.astype(int))  #Asier
 
         self.record_local_data_stats(gnd_origin)
 

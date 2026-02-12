@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from models.losses import BalancedSoftmax
+from sklearn.metrics import f1_score
 import torch
 
 
@@ -96,6 +97,7 @@ class MyModelTrainer(ModelTrainer):
 
         metrics_normal = {
             'test_correct': 0,
+            'test_f1': 0,
             'test_loss': 0,
             'test_total': 0,
             'rule_cndt': 0
@@ -110,6 +112,10 @@ class MyModelTrainer(ModelTrainer):
         else:
             criterion = BalancedSoftmax().to(device)
 
+        y_true_all = []
+        y_pred_all = []
+        f1_average = getattr(self.args, "f1_average", "macro")
+
         with torch.no_grad():
             for batch_idx, (x, target) in enumerate(test_data):
                 x = x.to(device)
@@ -122,11 +128,16 @@ class MyModelTrainer(ModelTrainer):
 
                 fs = torch.cat([fs, fire_strength], 0)
 
+                y_true_all.extend(target.squeeze().detach().cpu().tolist())
+                y_pred_all.extend(predicted.detach().cpu().tolist())
+
                 metrics_normal['test_correct'] += correct.item()
                 metrics_normal['test_loss'] += loss.item() * target.size(0)
                 metrics_normal['test_total'] += target.size(0)
 
         metrics_normal['fs'] = fs
+        if metrics_normal['test_total'] > 0:
+            metrics_normal['test_f1'] = f1_score(y_true_all, y_pred_all, average=f1_average)
         return metrics_normal
 
     def test_on_the_server(self, train_data_local_dict, test_data_local_dict, device, args=None) -> bool:

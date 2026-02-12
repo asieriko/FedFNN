@@ -53,7 +53,8 @@ class FedDatasetCV(data.Dataset):
     """
 
     def __init__(self, inputs, targets, n_class, task, name, p_args=None, data_idxs=None,
-                 transform=None, target_transform=None):
+                 transform=None, target_transform=None, fed_kfold_partition=None,
+                 require_partition=False):
         """
         init the Dataset class
         :param inputs: the features of data
@@ -82,11 +83,16 @@ class FedDatasetCV(data.Dataset):
         # partition dataset into several test data and training data
         self.current_fold = 0
         self.fed_kfold_partition = []
-        if self.args is not None:
-            # init partition strategy
-            fed_kfold_partition = FedKfoldPartition(self.args)
-            fed_kfold_partition.partition(targets, self.shuffle, 0)
+        if fed_kfold_partition is not None:
             self.fed_kfold_partition = fed_kfold_partition
+        elif self.args and self.args.partition is not None:
+            self.fed_kfold_partition = self.args.partition
+        elif self.data_idxs is None:
+            raise ValueError("FedDatasetCV requires an explicit partition for the full dataset.")
+        elif require_partition:
+            raise ValueError("FedDatasetCV requires an explicit partition, but none was provided.")
+        # For subset datasets (data_idxs), no partition is required.
+        # ...existing code...
 
     def __build_truncated_dataset__(self, data_para, target_para):
         data_return = data_para
@@ -211,6 +217,7 @@ def get_dataset_mat(dir_dataset, p_args):
     # inputs: torch.Tensor = load_data['X']).float().to(device)
     # targets: torch.Tensor = torch.tensor(load_data['Y'].astype(np.float32)).float().to(device)
     inputs = load_data['inputs'].astype(np.float32)
+
     # normalize data
     if p_args.b_norm_dataset:
         inputs = mapminmax(inputs)
@@ -233,13 +240,14 @@ def get_dataset_mat(dir_dataset, p_args):
     if len(targets.shape) == 1:
         targets = targets.unsqueeze(1)
 
-    task = str(load_data['task'])
+    task = "C" # FIXME: str(load_data['task'])
 
     # init partition strategy
     partition_strategy = FedKfoldPartition(p_args)
     partition_strategy.partition(targets, True, 0)
 
-    dataset = FedDatasetCV(inputs, targets, n_class, task, p_args.dataset, p_args=p_args)
+    dataset = FedDatasetCV(inputs, targets, n_class, task, p_args.dataset, p_args=p_args,
+                           fed_kfold_partition=partition_strategy)
     # set partition strategy
     dataset.set_partition(partition_strategy)
 

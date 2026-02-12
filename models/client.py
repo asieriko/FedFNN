@@ -1,4 +1,5 @@
 from models.losses import BalancedSoftmax
+from sklearn.metrics import f1_score
 import torch
 
 
@@ -139,6 +140,7 @@ class FedFPNNClient:
 
         metrics_normal = {
             'test_correct': 0,
+            'test_f1': 0,
             'test_loss': 0,
             'test_total': 0,
             'rule_cndt': 0
@@ -152,6 +154,10 @@ class FedFPNNClient:
             criterion = BalancedSoftmax().to(device)
         else:
             criterion = BalancedSoftmax().to(device)
+
+        y_true_all = []
+        y_pred_all = []
+        f1_average = getattr(self.args, "f1_average", "macro")
 
         with torch.no_grad():
             for batch_idx, (x, target) in enumerate(test_data):
@@ -167,11 +173,16 @@ class FedFPNNClient:
                 fs_tmp[:, self.rules_idx_list] = fire_strength
                 fs = torch.cat([fs, fs_tmp], 0)
 
+                y_true_all.extend(target.squeeze().detach().cpu().tolist())
+                y_pred_all.extend(predicted.detach().cpu().tolist())
+
                 metrics_normal['test_correct'] += correct.item()
                 metrics_normal['test_loss'] += loss.item() * target.size(0)
                 metrics_normal['test_total'] += target.size(0)
 
         metrics_normal['fs'] = fs
+        if metrics_normal['test_total'] > 0:
+            metrics_normal['test_f1'] = f1_score(y_true_all, y_pred_all, average=f1_average)
         return metrics_normal
 
     def train(self, w_global):
