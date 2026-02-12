@@ -166,6 +166,10 @@ if __name__ == "__main__":
     local_test_acc_tsr = torch.zeros(args.comm_round, args.n_client, args.n_kfolds).to(args.device)
     local_test_f1_tsr = torch.zeros(args.comm_round, args.n_client, args.n_kfolds).to(args.device)
 
+    # Tensors for global test set evaluation (each client on all test data)
+    client_global_test_f1_tsr = torch.zeros(args.n_client, args.n_kfolds).to(args.device)
+    client_global_test_acc_tsr = torch.zeros(args.n_client, args.n_kfolds).to(args.device)
+
     from data.load_dataset import read_json_dataset
     from pathlib import Path
     datasetName = args.dataset # "iris"
@@ -265,6 +269,13 @@ if __name__ == "__main__":
                 local_test_acc_tsr[commu_idx, client_idx, cv_idx] = metrics[f"client{client_idx + 1}_test_acc"]
                 local_test_loss_tsr[commu_idx, client_idx, cv_idx] = metrics[f"client{client_idx + 1}_test_loss"]
                 local_test_f1_tsr[commu_idx, client_idx, cv_idx] = metrics[f"client{client_idx + 1}_test_f1"]
+
+        # After training, evaluate each client on the combined global test set
+        args.logger.war(f"===== Evaluating clients on global test set for fold {cv_idx + 1} =====")
+        global_f1, global_acc = fedavgAPI._evaluate_clients_on_global_testset()
+        client_global_test_f1_tsr[:, cv_idx] = global_f1
+        client_global_test_acc_tsr[:, cv_idx] = global_acc
+
         if not args.b_debug:
             wandb.finish()
 
@@ -286,6 +297,10 @@ if __name__ == "__main__":
     save_dict["local_train_rule_contr"] = local_train_rule_contr.cpu().numpy()
     save_dict["local_test_f1_tsr"] = local_test_f1_tsr.cpu().numpy()
 
+    # Add global test evaluation results
+    save_dict["client_global_test_f1_tsr"] = client_global_test_f1_tsr.cpu().numpy()
+    save_dict["client_global_test_acc_tsr"] = client_global_test_acc_tsr.cpu().numpy()
+
     final_round = args.comm_round - 1
     final_f1_per_fold = global_test_f1_tsr[final_round].detach().cpu().numpy()
     final_f1_mean = float(final_f1_per_fold.mean())
@@ -294,6 +309,15 @@ if __name__ == "__main__":
     final_acc_per_fold = global_test_acc_tsr[final_round].detach().cpu().numpy()
     final_acc_mean = float(final_acc_per_fold.mean())
     final_acc_std = float(final_acc_per_fold.std())
+
+    # Calculate global test metrics (averaged across all clients and folds)
+    final_f1_global_per_fold = client_global_test_f1_tsr.mean(dim=0).detach().cpu().numpy()
+    final_f1_global_mean = float(final_f1_global_per_fold.mean())
+    final_f1_global_std = float(final_f1_global_per_fold.std())
+
+    final_acc_global_per_fold = client_global_test_acc_tsr.mean(dim=0).detach().cpu().numpy()
+    final_acc_global_mean = float(final_acc_global_per_fold.mean())
+    final_acc_global_std = float(final_acc_global_per_fold.std())
 
     # In this setup, each rule uses all antecedents (n_fea).
     antecedents_mean = float(args.n_fea)
@@ -309,6 +333,10 @@ if __name__ == "__main__":
     save_dict["final_f1_std"] = final_f1_std
     save_dict["final_acc_mean"] = final_acc_mean
     save_dict["final_acc_std"] = final_acc_std
+    save_dict["final_f1_global_mean"] = final_f1_global_mean
+    save_dict["final_f1_global_std"] = final_f1_global_std
+    save_dict["final_acc_global_mean"] = final_acc_global_mean
+    save_dict["final_acc_global_std"] = final_acc_global_std
     save_dict["antecedents_mean"] = antecedents_mean
     save_dict["antecedents_std"] = antecedents_std
     save_dict["rules_mean"] = rules_mean
@@ -316,9 +344,13 @@ if __name__ == "__main__":
 
     args.logger.info(f"Final F1 (mean±std over folds): {final_f1_mean:.4f} ± {final_f1_std:.4f}")
     args.logger.info(f"Final Acc (mean±std over folds): {final_acc_mean:.4f} ± {final_acc_std:.4f}")
+    args.logger.info(f"Final F1 Global (mean±std over folds): {final_f1_global_mean:.4f} ± {final_f1_global_std:.4f}")
+    args.logger.info(f"Final Acc Global (mean±std over folds): {final_acc_global_mean:.4f} ± {final_acc_global_std:.4f}")
     args.logger.info(f"Antecedents per rule (mean±std): {antecedents_mean:.2f} ± {antecedents_std:.2f}")
     print(f"Final F1 (mean±std over folds): {final_f1_mean:.4f} ± {final_f1_std:.4f}")
     print(f"Final Acc (mean±std over folds): {final_acc_mean:.4f} ± {final_acc_std:.4f}")
+    print(f"Final F1 Global (mean±std over folds): {final_f1_global_mean:.4f} ± {final_f1_global_std:.4f}")
+    print(f"Final Acc Global (mean±std over folds): {final_acc_global_mean:.4f} ± {final_acc_global_std:.4f}")
     print(f"Antecedents per rule (mean±std): {antecedents_mean:.2f} ± {antecedents_std:.2f}")
 
     save_file_name = "fed" + str(args.dataset) + "-r" + str(args.n_rule) + "-c" + str(args.n_client) \
@@ -337,13 +369,16 @@ if __name__ == "__main__":
     csv_file_path = f"{data_save_dir}/{csv_file_name}"
     with open(csv_file_path, "w", newline="") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["Dataset", "NClients", "Alpha", "Folds", "Fold", "Method", "client", "Rules", "AntecedentsMean", "AntecedentsStd", "f1", "acc"])
+        writer.writerow(["Dataset", "NClients", "Alpha", "Folds", "Fold", "Method", "client", "Rules",
+                        "AntecedentsMean", "AntecedentsStd", "f1", "acc", "f1_global_test", "acc_global_test"])
         method = "fedavg_fpnn"
         for fold_idx in range(args.n_kfolds):
             for client_idx in range(args.n_client):
                 rules = int((local_train_rule_count[final_round, client_idx, :, fold_idx] > 0).sum().item())
                 f1_val = float(local_test_f1_tsr[final_round, client_idx, fold_idx].item())
                 acc_val = float(local_test_acc_tsr[final_round, client_idx, fold_idx].item())
+                f1_global = float(client_global_test_f1_tsr[client_idx, fold_idx].item())
+                acc_global = float(client_global_test_acc_tsr[client_idx, fold_idx].item())
                 writer.writerow([
                     args.dataset,
                     args.n_client,
@@ -357,8 +392,12 @@ if __name__ == "__main__":
                     antecedents_std,
                     f1_val,
                     acc_val,
+                    f1_global,
+                    acc_global,
                 ])
 
     io.savemat(data_save_file, save_dict)
     print(save_dict)
     print(f"Wrote CSV: {csv_file_path}")
+
+

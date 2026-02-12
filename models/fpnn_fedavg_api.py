@@ -375,3 +375,71 @@ class FedAvgAPI(object):
             raise Exception("Unknown format to log metrics for dataset {}!" % self.args.dataset)
 
         self.args.logger.info(stats)
+
+    def _evaluate_clients_on_global_testset(self):
+        """
+        Evaluate each client's local model on all combined test data from all clients.
+        Returns F1 score and accuracy for each client evaluated globally.
+        """
+        self.args.logger.info("################Evaluating clients on global test set#############")
+
+        # Combine all test data from all clients
+        from torch.utils.data import ConcatDataset, DataLoader
+
+        all_test_datasets = []
+        for client_idx in range(self.args.n_client):
+            if self.test_data_local_dict[client_idx] is not None:
+                all_test_datasets.append(self.test_data_local_dict[client_idx].dataset)
+
+        combined_test_dataset = ConcatDataset(all_test_datasets)
+        combined_test_loader = DataLoader(
+            combined_test_dataset,
+            batch_size=self.args.batch_size,
+            shuffle=False
+        )
+
+        client = self.client_list[0]
+
+        # Store results for each client
+        global_eval_f1 = torch.zeros(self.args.n_client).to(self.args.device)
+        global_eval_acc = torch.zeros(self.args.n_client).to(self.args.device)
+
+        for client_idx in range(self.args.n_client):
+            if client_idx not in self.local_model_params:
+                self.args.logger.war(f"No local model found for client {client_idx}")
+                continue
+
+            # Save current global model
+            w_global_backup = copy.deepcopy(self.model_trainer.get_model_params())
+
+            # Load this client's personalized model
+            self.model_trainer.set_model_params(self.local_model_params[client_idx])
+
+            # Update client to use combined test data
+            client.update_local_dataset(
+                client_idx,
+                self.train_data_local_dict[client_idx],
+                combined_test_loader,
+                self.train_data_local_num_dict[client_idx],
+                self.train_data_local_class_count[client_idx]
+            )
+
+            # Test on combined test set
+            test_metrics = client.local_test(True)
+            test_correct = test_metrics['test_correct']
+            test_total = test_metrics['test_total']
+            test_f1 = test_metrics['test_f1']
+
+            global_eval_acc[client_idx] = test_correct / test_total if test_total > 0 else 0.0
+            global_eval_f1[client_idx] = test_f1
+
+            self.args.logger.info(
+                f"Client {client_idx} on global test set: "
+                f"F1={test_f1:.4f}, Acc={global_eval_acc[client_idx]:.4f}"
+            )
+
+            # Restore global model
+            self.model_trainer.set_model_params(w_global_backup)
+
+        return global_eval_f1, global_eval_acc
+
