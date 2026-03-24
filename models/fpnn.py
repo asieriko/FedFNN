@@ -239,7 +239,14 @@ class FedFPNNR(nn.Module):
                                in self.rule_list], dim=0)
 
         fire_strength_ini = torch.cat([self.fs_layer(data_diff_item) for data_diff_item in fuzzy_set], dim=1)
-        fire_strength = F.softmax(fire_strength_ini[:, self.rules_idx_list], dim=1)
+        active_rule_idx = torch.as_tensor(self.rules_idx_list, dtype=torch.long, device=data.device)
+        if active_rule_idx.numel() > 0:
+            active_rule_idx = torch.unique(active_rule_idx)
+            active_rule_idx = active_rule_idx[(active_rule_idx >= 0) & (active_rule_idx < self.args.n_rule)]
+        if active_rule_idx.numel() == 0:
+            active_rule_idx = torch.arange(self.args.n_rule, device=data.device)
+
+        fire_strength = F.softmax(fire_strength_ini.index_select(1, active_rule_idx), dim=1)
 
         # produce consequent layer
         data_processed = torch.cat([F.relu(rules_item.consequent_layer(data)).unsqueeze(0) for rules_item
@@ -248,7 +255,7 @@ class FedFPNNR(nn.Module):
 
         outputs = torch.cat([(data_processed_item * fire_strength_item.unsqueeze(1)).unsqueeze(0)
                              for data_processed_item, fire_strength_item in
-                             zip(data_processed[self.rules_idx_list], fire_strength.t())],
+                             zip(data_processed.index_select(0, active_rule_idx), fire_strength.t())],
                             dim=0).sum(0)
 
         return outputs, fire_strength
@@ -301,7 +308,14 @@ class FPNN(nn.Module):
                                in self.rule_list], dim=0)
 
         fire_strength_ini = torch.cat([self.fs_layer(data_diff_item) for data_diff_item in fuzzy_set], dim=1)
-        fire_strength = F.softmax(fire_strength_ini[:, self.rules_idx_list], dim=1)
+        active_rule_idx = torch.as_tensor(self.rules_idx_list, dtype=torch.long, device=data.device)
+        if active_rule_idx.numel() > 0:
+            active_rule_idx = torch.unique(active_rule_idx)
+            active_rule_idx = active_rule_idx[(active_rule_idx >= 0) & (active_rule_idx < self.args.n_rule)]
+        if active_rule_idx.numel() == 0:
+            active_rule_idx = torch.arange(self.args.n_rule, device=data.device)
+
+        fire_strength = F.softmax(fire_strength_ini.index_select(1, active_rule_idx), dim=1)
 
         # produce consequent layer
         data_processed = torch.cat([F.relu(rules_item.consequent_layer(data)).unsqueeze(0) for rules_item
@@ -310,7 +324,7 @@ class FPNN(nn.Module):
 
         outputs = torch.cat([(data_processed_item * fire_strength_item.unsqueeze(1)).unsqueeze(0)
                              for data_processed_item, fire_strength_item in
-                             zip(data_processed[self.rules_idx_list], fire_strength.t())],
+                             zip(data_processed.index_select(0, active_rule_idx), fire_strength.t())],
                             dim=0).sum(0)
 
         return outputs, fire_strength

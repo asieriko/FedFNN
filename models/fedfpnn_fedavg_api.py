@@ -319,7 +319,14 @@ class FedAvgAPI(object):
                     arr_diff = torch.zeros(n_diff).long().to(self.args.device)
                     train_rule_count_client = torch.cat([train_rule_count_client, arr_diff], 0)
                 train_rule_contr_client = train_rule_fs_client.mean(0)
-                c_th = np.arange(self.args.n_rule)[train_rule_contr_client.cpu() > 1 / client.rules_idx_list.size]
+                rule_contr_np = train_rule_contr_client.detach().cpu().numpy()
+                min_active_rules = max(1, min(client.n_rule_limit, self.args.n_rule))
+                threshold = 1 / max(1, client.rules_idx_list.size)
+                c_th = np.arange(self.args.n_rule)[rule_contr_np > threshold]
+                # Keep at least the minimum active rules to avoid empty-rule forward passes.
+                if c_th.size < min_active_rules:
+                    c_th = np.argsort(rule_contr_np)[-min_active_rules:]
+                c_th = np.sort(c_th.astype(np.int64))
                 # c_th = np.arange(self.args.n_rule)[train_rule_contr_client.cpu() > 0.7 / self.args.n_rule]
                 # c_th = np.arange(self.args.n_rule)[train_rule_contr_client.cpu() > 1e-3]
                 # c_th = c_th[train_rule_count_client[c_th].cpu() > 150]
@@ -327,7 +334,9 @@ class FedAvgAPI(object):
                     client.update_rule_idx_list(c_th)
 
         if (round_idx + 1) % self.args.milestone == 0 and round_idx < 100:
-            explore_rule_idx = torch.arange(self.args.n_client)[train_acc_local < train_acc_local.mean()]
+            explore_rule_idx = torch.arange(
+                self.args.n_client, device=train_acc_local.device
+            )[train_acc_local < train_acc_local.mean()]
             _, indices = torch.sort(train_acc_local[explore_rule_idx], descending=False)
             explore_rule_idx = explore_rule_idx[indices]
             activate_rule_tag = torch.zeros(self.args.n_rule, dtype=torch.bool)

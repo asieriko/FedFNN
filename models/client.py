@@ -1,5 +1,6 @@
 from models.losses import BalancedSoftmax
 from sklearn.metrics import f1_score
+import numpy as np
 import torch
 
 
@@ -76,7 +77,13 @@ class FedFPNNClient:
         self.local_class_count = local_class_count
 
     def update_rule_idx_list(self, rules_idx_list):
-        self.rules_idx_list = rules_idx_list
+        rules_idx_arr = torch.as_tensor(rules_idx_list, dtype=torch.long).cpu().numpy()
+        if rules_idx_arr.size > 0:
+            rules_idx_arr = np.unique(rules_idx_arr)
+            rules_idx_arr = rules_idx_arr[(rules_idx_arr >= 0) & (rules_idx_arr < self.args.n_rule)]
+        if rules_idx_arr.size == 0:
+            rules_idx_arr = np.array([0], dtype=np.int64)
+        self.rules_idx_list = rules_idx_arr
 
     def get_sample_number(self):
         return self.local_sample_number
