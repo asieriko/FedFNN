@@ -14,7 +14,7 @@ from models.fpnn_fedavg_api import FedAvgAPI
 from models.fpnn_fed_trainer import MyModelTrainer as MyModelTrainerFPNN
 
 
-from data.custom_partiton import load_multiple_fold_files
+from data_process.custom_partiton import load_multiple_fold_files
 
 def add_args(p_parser):
     """
@@ -329,6 +329,40 @@ if __name__ == "__main__":
     rules_mean = float(final_rule_counts_np.mean())
     rules_std = float(final_rule_counts_np.std())
 
+    # Count how many rules were used per client (nonzero counts) on the final round.
+    final_rule_counts = (local_train_rule_count[final_round] > 0).sum(dim=1)
+    final_rule_counts_np = final_rule_counts.detach().cpu().numpy().reshape(-1)
+    rules_mean = float(final_rule_counts_np.mean())
+    rules_std = float(final_rule_counts_np.std())
+
+    # NEW: total number of rules configured in the global/server model
+    server_total_rules = int(args.n_rule)
+
+    # NEW (optional but useful): number of globally used rules per fold on final round
+    # Shape global_train_rule_count: [comm_round, n_rule, n_kfolds]
+    server_used_rules_per_fold = (global_train_rule_count[final_round] > 0).sum(dim=0)  # [n_kfolds]
+    server_used_rules_mean = float(server_used_rules_per_fold.float().mean().item())
+    server_used_rules_std = float(server_used_rules_per_fold.float().std(unbiased=False).item())
+
+    save_dict["final_f1_mean"] = final_f1_mean
+    save_dict["final_f1_std"] = final_f1_std
+    save_dict["final_acc_mean"] = final_acc_mean
+    save_dict["final_acc_std"] = final_acc_std
+    save_dict["final_f1_global_mean"] = final_f1_global_mean
+    save_dict["final_f1_global_std"] = final_f1_global_std
+    save_dict["final_acc_global_mean"] = final_acc_global_mean
+    save_dict["final_acc_global_std"] = final_acc_global_std
+    save_dict["antecedents_mean"] = antecedents_mean
+    save_dict["antecedents_std"] = antecedents_std
+    save_dict["rules_mean"] = rules_mean
+    save_dict["rules_std"] = rules_std
+
+    # NEW fields in .mat
+    save_dict["server_total_rules"] = server_total_rules
+    save_dict["server_used_rules_per_fold"] = server_used_rules_per_fold.detach().cpu().numpy()
+    save_dict["server_used_rules_mean"] = server_used_rules_mean
+    save_dict["server_used_rules_std"] = server_used_rules_std
+
     save_dict["final_f1_mean"] = final_f1_mean
     save_dict["final_f1_std"] = final_f1_std
     save_dict["final_acc_mean"] = final_acc_mean
@@ -369,10 +403,14 @@ if __name__ == "__main__":
     csv_file_path = f"{data_save_dir}/{csv_file_name}"
     with open(csv_file_path, "w", newline="") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["Dataset", "NClients", "Alpha", "Folds", "Fold", "Method", "client", "Rules",
-                        "AntecedentsMean", "AntecedentsStd", "f1", "acc", "f1_global_test", "acc_global_test"])
+        writer.writerow([
+            "Dataset", "NClients", "Alpha", "Folds", "Fold", "Method", "client",
+            "Rules", "ServerTotalRules", "ServerUsedRulesFinalRound",
+            "AntecedentsMean", "AntecedentsStd", "f1", "acc", "f1_global_test", "acc_global_test"
+        ])
         method = "fedavg_fpnn"
         for fold_idx in range(args.n_kfolds):
+            server_used_rules_fold = int(server_used_rules_per_fold[fold_idx].item())  # NEW
             for client_idx in range(args.n_client):
                 rules = int((local_train_rule_count[final_round, client_idx, :, fold_idx] > 0).sum().item())
                 f1_val = float(local_test_f1_tsr[final_round, client_idx, fold_idx].item())
@@ -388,6 +426,8 @@ if __name__ == "__main__":
                     method,
                     client_idx + 1,
                     rules,
+                    server_total_rules,        # NEW
+                    server_used_rules_fold,    # NEW
                     antecedents_mean,
                     antecedents_std,
                     f1_val,

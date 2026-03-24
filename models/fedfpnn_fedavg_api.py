@@ -198,9 +198,11 @@ class FedAvgAPI(object):
             'train_num_samples': [],
             'train_num_correct': [],
             'train_losses': [],
+            'train_f1': [],
             'test_num_samples': [],
             'test_num_correct': [],
             'test_losses': [],
+            'test_f1': [],
         }
 
         train_rule_count_local = torch.zeros(self.args.n_client, self.args.n_rule).to(self.args.device)
@@ -237,9 +239,11 @@ class FedAvgAPI(object):
             train_num_client = copy.deepcopy(train_local_metrics['test_total'])
             train_correct_num_client = copy.deepcopy(train_local_metrics['test_correct'])
             train_loss_all_client = copy.deepcopy(train_local_metrics['test_loss'])
+            train_f1_client = copy.deepcopy(train_local_metrics['test_f1'])
             metrics['train_num_samples'].append(train_num_client)
             metrics['train_num_correct'].append(train_correct_num_client)
             metrics['train_losses'].append(train_loss_all_client)
+            metrics['train_f1'].append(train_f1_client)
             train_acc_client = train_correct_num_client / train_num_client
             train_loss_client = train_loss_all_client / train_num_client
             train_acc_local[client_idx] = train_acc_client
@@ -266,9 +270,11 @@ class FedAvgAPI(object):
             test_num_client = copy.deepcopy(test_local_metrics['test_total'])
             test_correct_num_client = copy.deepcopy(test_local_metrics['test_correct'])
             test_loss_all_client = copy.deepcopy(test_local_metrics['test_loss'])
+            test_f1_client = copy.deepcopy(test_local_metrics['test_f1'])
             metrics['test_num_samples'].append(test_num_client)
             metrics['test_num_correct'].append(test_correct_num_client)
             metrics['test_losses'].append(test_loss_all_client)
+            metrics['test_f1'].append(test_f1_client)
 
             # test on local test dataset
             test_acc_client = test_correct_num_client / test_num_client
@@ -386,17 +392,32 @@ class FedAvgAPI(object):
                     test_acc_local[client_idx])
                 metrics_rule[f"client{client_idx + 1}_test_loss"] = float(
                     test_loss_local[client_idx])
+                metrics_rule[f"client{client_idx + 1}_train_f1"] = float(
+                    metrics['train_f1'][client_idx])
+                metrics_rule[f"client{client_idx + 1}_test_f1"] = float(
+                    metrics['test_f1'][client_idx])
 
         # test on training dataset
         train_acc = sum(metrics['train_num_correct']) / sum(metrics['train_num_samples'])
         train_loss = sum(metrics['train_losses']) / sum(metrics['train_num_samples'])
+        if sum(metrics['train_num_samples']) > 0:
+            train_f1 = sum([f * n for f, n in zip(metrics['train_f1'], metrics['train_num_samples'])]) / \
+                sum(metrics['train_num_samples'])
+        else:
+            train_f1 = 0.0
 
         # test on test dataset
         test_acc = sum(metrics['test_num_correct']) / sum(metrics['test_num_samples'])
         test_loss = sum(metrics['test_losses']) / sum(metrics['test_num_samples'])
+        if sum(metrics['test_num_samples']) > 0:
+            test_f1 = sum([f * n for f, n in zip(metrics['test_f1'], metrics['test_num_samples'])]) / \
+                sum(metrics['test_num_samples'])
+        else:
+            test_f1 = 0.0
 
         metrics_stats = {'training_acc': train_acc, 'training_loss': train_loss,
-                         'test_acc': test_acc, 'test_loss': test_loss}
+                         'training_f1': train_f1, 'test_acc': test_acc, 'test_loss': test_loss,
+                         'test_f1': test_f1}
 
         metrics_rtn = {**metrics_stats, **metrics_rule}
         if not self.args.b_debug:
